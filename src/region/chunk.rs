@@ -447,7 +447,7 @@ pub fn upgrade_chunks(
                     types::chunk,
                     chunk,
                     || format!("chunk at {chunk_x}, {chunk_z}"),
-                    LAST_MONOLITH_STRUCTURE_DATA_VERSION,
+                    LAST_MONOLITH_STRUCTURE_DATA_VERSION.min(to_version),
                     99,
                 ) {
                     return false;
