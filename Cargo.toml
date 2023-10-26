@@ -14,4 +14,4 @@ rayon = "1.7.0"
 valence_anvil = "0.1.0"
 valence_nbt = { version = "0.8", features = ["binary", "java_string"] }
 world-transmuter = { path = "../world-transmuter" }
-world-transmuter-engine = "0.6"
+world-transmuter-engine = "0.6.1"

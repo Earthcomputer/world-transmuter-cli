@@ -594,9 +594,9 @@ dependencies = [
 
 [[package]]
 name = "world-transmuter-engine"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57609fb7a773176af77a15685fc309eedcf037e0187021519d90ae50ce299ccd"
+checksum = "a4a4e2743382391c561fcea03a6ebeda2c4009b736dc4bc092c76c1298bb53b0"
 dependencies = [
  "java_string",
  "valence_nbt",
