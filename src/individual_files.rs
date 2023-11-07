@@ -1,4 +1,3 @@
-use crate::indent::Indent;
 use crate::{upgrade, ADVANCEMENTS_AND_STATS_VERSION};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -9,6 +8,7 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::sync::RwLockReadGuard;
+use tracing::{error, info_span, warn, Span};
 use valence_nbt::{from_binary, to_binary};
 use world_transmuter::json::{parse_compound, stringify_compound};
 use world_transmuter::types;
@@ -25,14 +25,8 @@ const OLD_SETTINGS_KEYS: [&str; 7] = [
     "BonusChest",
 ];
 
-pub fn upgrade_level_dat(
-    mut indent: Indent,
-    world: &Path,
-    to_version: u32,
-    dry_run: bool,
-) -> Option<JCompound> {
-    println!("{indent}Upgrading level.dat");
-    indent.indent();
+pub fn upgrade_level_dat(world: &Path, to_version: u32, dry_run: bool) -> Option<JCompound> {
+    let _span = info_span!("Upgrading level.dat").entered();
     fn update_data(data: &mut JCompound, from_version: u32, to_version: u32) {
         data.remove("Player"); // TODO: what is this?
 
@@ -70,17 +64,17 @@ pub fn upgrade_level_dat(
 
     let path = world.join("level.dat");
     let Ok(mut file) = File::options().read(true).write(!dry_run).open(&path) else {
-        println!("{indent}Failed to open {}", path.to_string_lossy());
+        error!("Failed to open {}", path.to_string_lossy());
         return None;
     };
 
     let Some(mut level_dat) = read_compound(&mut file) else {
-        println!("{indent}Failed to read level.dat");
+        error!("Failed to read level.dat");
         return None;
     };
 
     let Some(JValue::Compound(data)) = level_dat.get_mut("Data") else {
-        println!("{indent}Missing Data tag in level.dat");
+        error!("Missing Data tag in level.dat");
         return None;
     };
 
@@ -90,14 +84,11 @@ pub fn upgrade_level_dat(
         .and_then(|v| v.as_i32())
         .unwrap_or(99) as u32;
     let Some(data_version) = get_version_by_id(data_version) else {
-        println!("{indent}level.dat had unrecognized data version {data_version}");
+        warn!("level.dat had unrecognized data version {data_version}");
         return None;
     };
     if data_version.data_version > to_version {
-        println!(
-            "{indent}Cannot downgrade level.dat from {}",
-            data_version.name
-        );
+        warn!("Cannot downgrade level.dat from {}", data_version.name);
 
         update_data(data, data_version.data_version, latest_version);
 
@@ -110,7 +101,7 @@ pub fn upgrade_level_dat(
     update_data(data, data_version.data_version, to_version);
 
     if !dry_run && !write_compound(file, &level_dat) {
-        println!("{indent}Failed to write back to level.dat");
+        error!("Failed to write back to level.dat");
         return None;
     }
 
@@ -123,55 +114,45 @@ pub fn upgrade_level_dat(
     Some(data)
 }
 
-pub fn upgrade_playerdata(indent: Indent, world: &Path, to_version: u32, dry_run: bool) {
-    upgrade_dat_dir(
-        indent,
-        world,
-        to_version,
-        dry_run,
-        "playerdata",
-        types::player,
-    );
+pub fn upgrade_playerdata(world: &Path, to_version: u32, dry_run: bool) {
+    upgrade_dat_dir(world, to_version, dry_run, "playerdata", types::player);
 }
 
 fn upgrade_dat_dir(
-    mut indent: Indent,
     world: &Path,
     to_version: u32,
     dry_run: bool,
     name: &str,
     typ: impl Sync + Send + Fn() -> RwLockReadGuard<'static, MapDataType<'static>>,
 ) {
-    println!("{indent}Upgrading {name}");
-    indent.indent();
+    let _span = info_span!("Upgrading data directory", message = name).entered();
     let dat_dir = world.join(name);
     match std::fs::read_dir(dat_dir) {
         Ok(dir) => {
-            dir.collect::<Vec<_>>()
-                .into_par_iter()
-                .for_each(|file| match file {
+            let parent_span = Span::current();
+            dir.collect::<Vec<_>>().into_par_iter().for_each_init(
+                move || parent_span.clone().entered(),
+                |_, file| match file {
                     Ok(file) => {
                         let path = file.path();
                         if path.extension() == Some("dat".as_ref()) {
-                            let mut file =
-                                match File::options().read(true).write(!dry_run).open(&path) {
-                                    Ok(file) => file,
-                                    Err(err) => {
-                                        println!(
-                                            "{indent}Failed to open {}: {}",
-                                            path.to_string_lossy(),
-                                            err
-                                        );
-                                        return;
-                                    }
-                                };
+                            let mut file = match File::options()
+                                .read(true)
+                                .write(!dry_run)
+                                .open(&path)
+                            {
+                                Ok(file) => file,
+                                Err(err) => {
+                                    error!("Failed to open {}: {}", path.to_string_lossy(), err);
+                                    return;
+                                }
+                            };
                             let Some(mut data) = read_compound(&mut file) else {
-                                println!("{indent}Failed to read {}", path.to_string_lossy());
+                                error!("Failed to read {}", path.to_string_lossy());
                                 return;
                             };
 
                             if !upgrade(
-                                indent,
                                 &typ,
                                 &mut data,
                                 || path.to_string_lossy().into_owned(),
@@ -182,25 +163,25 @@ fn upgrade_dat_dir(
                             }
 
                             if !dry_run && !write_compound(&mut file, &data) {
-                                println!("{indent}Failed to write file {}", path.to_string_lossy());
+                                error!("Failed to write file {}", path.to_string_lossy());
                             }
                         }
                     }
                     Err(err) => {
-                        println!("{indent}Failed to read {name} directory entry: {err}");
+                        error!("Failed to read {name} directory entry: {err}");
                     }
-                });
+                },
+            );
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => {
-            println!("{indent}Failed to read {name} dir: {err}");
+            error!("Failed to read {name} dir: {err}");
         }
     }
 }
 
-pub fn upgrade_advancements(indent: Indent, world: &Path, to_version: u32, dry_run: bool) {
+pub fn upgrade_advancements(world: &Path, to_version: u32, dry_run: bool) {
     upgrade_json_dir(
-        indent,
         world,
         to_version,
         dry_run,
@@ -210,20 +191,11 @@ pub fn upgrade_advancements(indent: Indent, world: &Path, to_version: u32, dry_r
     )
 }
 
-pub fn upgrade_stats(indent: Indent, world: &Path, to_version: u32, dry_run: bool) {
-    upgrade_json_dir(
-        indent,
-        world,
-        to_version,
-        dry_run,
-        "stats",
-        false,
-        types::stats,
-    );
+pub fn upgrade_stats(world: &Path, to_version: u32, dry_run: bool) {
+    upgrade_json_dir(world, to_version, dry_run, "stats", false, types::stats);
 }
 
 fn upgrade_json_dir(
-    mut indent: Indent,
     world: &Path,
     to_version: u32,
     dry_run: bool,
@@ -231,25 +203,21 @@ fn upgrade_json_dir(
     pretty_json: bool,
     typ: impl Sync + Send + Fn() -> RwLockReadGuard<'static, MapDataType<'static>>,
 ) {
-    println!("{indent}Upgrading {name}");
-    indent.indent();
+    let _span = info_span!("Upgrading json directory", message = name).entered();
     let json_dir = world.join(name);
     match std::fs::read_dir(json_dir) {
         Ok(dir) => {
-            dir.collect::<Vec<_>>()
-                .into_par_iter()
-                .for_each(|file| match file {
+            let parent_span = Span::current();
+            dir.collect::<Vec<_>>().into_par_iter().for_each_init(
+                move || parent_span.clone().entered(),
+                |_, file| match file {
                     Ok(file) => {
                         let path = file.path();
                         if path.extension() == Some("json".as_ref()) {
                             let json = match std::fs::read_to_string(&path) {
                                 Ok(json) => json,
                                 Err(err) => {
-                                    println!(
-                                        "{indent}Failed to read {}: {}",
-                                        path.to_string_lossy(),
-                                        err
-                                    );
+                                    error!("Failed to read {}: {}", path.to_string_lossy(), err);
                                     return;
                                 }
                             };
@@ -257,17 +225,12 @@ fn upgrade_json_dir(
                             {
                                 Ok(compound) => compound,
                                 Err(err) => {
-                                    println!(
-                                        "{indent}Failed to read {}: {}",
-                                        path.to_string_lossy(),
-                                        err
-                                    );
+                                    error!("Failed to read {}: {}", path.to_string_lossy(), err);
                                     return;
                                 }
                             };
 
                             if !upgrade(
-                                indent,
                                 &typ,
                                 &mut compound,
                                 || path.to_string_lossy().into_owned(),
@@ -282,8 +245,8 @@ fn upgrade_json_dir(
                                     &path,
                                     stringify_compound(compound, true, pretty_json),
                                 ) {
-                                    println!(
-                                        "{indent}Failed to write file {}: {}",
+                                    error!(
+                                        "Failed to write file {}: {}",
                                         path.to_string_lossy(),
                                         err
                                     );
@@ -292,13 +255,14 @@ fn upgrade_json_dir(
                         }
                     }
                     Err(err) => {
-                        println!("{indent}Failed to read {name} directory entry: {err}");
+                        error!("Failed to read {name} directory entry: {err}");
                     }
-                });
+                },
+            );
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => {
-            println!("{indent}Failed to read {name} dir: {err}");
+            error!("Failed to read {name} dir: {err}");
         }
     }
 }

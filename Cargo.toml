@@ -11,6 +11,10 @@ clap = { version = "4.4.2", features = ["cargo"] }
 flate2 = "1.0.26"
 java_string = "0.1"
 rayon = "1.7.0"
+time = "0.3.30"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+tracing-tree = { version = "0.2.5", features = ["time"] }
 valence_anvil = "0.1.0"
 valence_nbt = { version = "0.8", features = ["binary", "java_string"] }
 world-transmuter = { path = "../world-transmuter" }

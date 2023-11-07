@@ -1,5 +1,4 @@
 use crate::data::read_data;
-use crate::indent::Indent;
 use crate::region::{upgrade_regions, SEPARATE_ENTITIES_VERSION};
 use crate::upgrade;
 use ahash::{AHashMap, AHashSet};
@@ -8,6 +7,7 @@ use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::OnceLock;
+use tracing::{error, info_span};
 use valence_anvil::RegionFolder;
 use valence_nbt::{compound, jcompound};
 use world_transmuter::{static_string_map, static_string_set, types};
@@ -97,7 +97,6 @@ struct LegacyStructureDataHandler {
 
 impl LegacyStructureDataHandler {
     fn new(
-        indent: Indent,
         world_folder: &Path,
         legacy_keys: &'static [&'static JavaStr],
         current_keys: &'static [&'static JavaStr],
@@ -110,29 +109,28 @@ impl LegacyStructureDataHandler {
             index_map: BTreeMap::new(),
         };
 
-        result.populate_caches(indent, world_folder);
+        result.populate_caches(world_folder);
         result.has_legacy_data = current_keys
             .iter()
             .any(|key| result.data_map.contains_key(*key));
         result
     }
 
-    fn populate_caches(&mut self, indent: Indent, world_folder: &Path) {
+    fn populate_caches(&mut self, world_folder: &Path) {
         for legacy_key in self.legacy_keys {
             let mut data = match read_data(world_folder, legacy_key.as_str_lossy()) {
                 Ok(Some(data)) => data,
                 Ok(None) => {
-                    println!("{indent}Failed to parse {legacy_key}.dat");
+                    error!("Failed to parse {legacy_key}.dat");
                     continue;
                 }
                 Err(err) if err.kind() == ErrorKind::NotFound => continue,
                 Err(err) => {
-                    println!("{indent}Failed to read {legacy_key}.dat: {err}");
+                    error!("Failed to read {legacy_key}.dat: {err}");
                     continue;
                 }
             };
             if !upgrade(
-                indent,
                 types::saved_data_structure_feature_indices,
                 &mut data,
                 || format!("{legacy_key}.dat"),
@@ -153,7 +151,7 @@ impl LegacyStructureDataHandler {
 
             let index_key = (*legacy_key).to_owned() + "_index";
             let Some(index_saved_data) =
-                StructureFeatureIndexSavedData::load(indent, world_folder, index_key)
+                StructureFeatureIndexSavedData::load(world_folder, index_key)
             else {
                 continue;
             };
@@ -196,20 +194,19 @@ impl LegacyStructureDataHandler {
         }
     }
 
-    fn get(indent: Indent, dimension: &JavaStr, world_folder: &Path) -> Option<Self> {
+    fn get(dimension: &JavaStr, world_folder: &Path) -> Option<Self> {
         if dimension == "minecraft:overworld" {
             Some(Self::new(
-                indent,
                 world_folder,
                 &OVERWORLD_LEGACY_KEYS,
                 &OVERWORLD_CURRENT_KEYS,
             ))
         } else if dimension == "minecraft:the_nether" {
-            Some(Self::new(indent, world_folder, &NETHER_KEYS, &NETHER_KEYS))
+            Some(Self::new(world_folder, &NETHER_KEYS, &NETHER_KEYS))
         } else if dimension == "minecraft:the_end" {
-            Some(Self::new(indent, world_folder, &END_KEYS, &END_KEYS))
+            Some(Self::new(world_folder, &END_KEYS, &END_KEYS))
         } else {
-            println!("{indent}Custom dimension {dimension} had too old chunk version");
+            error!("Custom dimension {dimension} had too old chunk version");
             None
         }
     }
@@ -324,21 +321,20 @@ impl StructureFeatureIndexSavedData {
         }
     }
 
-    fn load(indent: Indent, world_folder: &Path, index_key: JavaString) -> Option<Self> {
+    fn load(world_folder: &Path, index_key: JavaString) -> Option<Self> {
         let mut data = match read_data(world_folder, index_key.as_str_lossy()) {
             Ok(Some(data)) => data,
             Ok(None) => {
-                println!("{indent}Failed to parse {index_key}.dat");
+                error!("Failed to parse {index_key}.dat");
                 return None;
             }
             Err(err) if err.kind() == ErrorKind::NotFound => JCompound::new(),
             Err(err) => {
-                println!("{indent}Failed to read {index_key}.dat: {err}");
+                error!("Failed to read {index_key}.dat: {err}");
                 return None;
             }
         };
         if !upgrade(
-            indent,
             types::saved_data_structure_feature_indices,
             &mut data,
             || format!("{index_key}.dat"),
@@ -385,7 +381,6 @@ impl StructureFeatureIndexSavedData {
 }
 
 fn update_chunk_from_legacy(
-    indent: Indent,
     dim_id: &JavaStr,
     world_folder: &Path,
     legacy_structure_handler: &OnceLock<Option<LegacyStructureDataHandler>>,
@@ -403,7 +398,7 @@ fn update_chunk_from_legacy(
     }
 
     let legacy_structure_handler = legacy_structure_handler
-        .get_or_init(|| LegacyStructureDataHandler::get(indent, dim_id, world_folder))
+        .get_or_init(|| LegacyStructureDataHandler::get(dim_id, world_folder))
         .as_ref();
     if let Some(legacy_structure_handler) = legacy_structure_handler {
         legacy_structure_handler.update_from_legacy(chunk);
@@ -411,7 +406,6 @@ fn update_chunk_from_legacy(
 }
 
 pub fn upgrade_chunks(
-    indent: Indent,
     dim_id: &JavaStr,
     generator_type: &JavaStr,
     world_folder: &Path,
@@ -419,12 +413,12 @@ pub fn upgrade_chunks(
     to_version: u32,
     dry_run: bool,
 ) {
-    println!("{indent}Upgrading regions");
+    let _span = info_span!("Upgrading regions").entered();
 
     if !dry_run && to_version >= SEPARATE_ENTITIES_VERSION {
         if let Err(err) = std::fs::create_dir(dimension.join("entities")) {
             if err.kind() != ErrorKind::AlreadyExists {
-                println!("{indent}Failed to create entity region dir: {err}");
+                error!("Failed to create entity region dir: {err}");
             }
         }
     }
@@ -432,10 +426,9 @@ pub fn upgrade_chunks(
     let legacy_structure_handler = OnceLock::new();
 
     upgrade_regions::<RegionFolder>(
-        indent,
         &dimension.join("region"),
         dry_run,
-        |indent, chunk_x, chunk_z, chunk, entity_region_folder| {
+        |chunk_x, chunk_z, chunk, entity_region_folder| {
             let version = chunk
                 .get("DataVersion")
                 .and_then(|v| v.as_i32())
@@ -443,7 +436,6 @@ pub fn upgrade_chunks(
                 .unwrap_or(99);
             if version < LAST_MONOLITH_STRUCTURE_DATA_VERSION {
                 if !upgrade(
-                    indent,
                     types::chunk,
                     chunk,
                     || format!("chunk at {chunk_x}, {chunk_z}"),
@@ -455,13 +447,7 @@ pub fn upgrade_chunks(
                 if to_version < LAST_MONOLITH_STRUCTURE_DATA_VERSION {
                     return true;
                 }
-                update_chunk_from_legacy(
-                    indent,
-                    dim_id,
-                    world_folder,
-                    &legacy_structure_handler,
-                    chunk,
-                );
+                update_chunk_from_legacy(dim_id, world_folder, &legacy_structure_handler, chunk);
             }
             chunk.insert(
                 "__context",
@@ -471,7 +457,6 @@ pub fn upgrade_chunks(
                 },
             );
             if !upgrade(
-                indent,
                 types::chunk,
                 chunk,
                 || format!("chunk at {chunk_x}, {chunk_z}"),
@@ -498,7 +483,9 @@ pub fn upgrade_chunks(
                                         "Entities" => entities,
                                     },
                                 ) {
-                                    println!("{indent}Error writing entity chunk {chunk_x}, {chunk_z}: {err}");
+                                    error!(
+                                        "Error writing entity chunk {chunk_x}, {chunk_z}: {err}"
+                                    );
                                     return false;
                                 }
                             }
@@ -514,7 +501,7 @@ pub fn upgrade_chunks(
                                     "Entities" => entities,
                                 },
                             ) {
-                                println!("{indent}Error writing entity chunk {chunk_x}, {chunk_z}: {err}");
+                                error!("Error writing entity chunk {chunk_x}, {chunk_z}: {err}");
                                 return false;
                             }
                         }
@@ -528,22 +515,22 @@ pub fn upgrade_chunks(
     );
 }
 
-fn delete_legacy_dat_file(indent: Indent, world_folder: &Path, key: &JavaStr) {
+fn delete_legacy_dat_file(world_folder: &Path, key: &JavaStr) {
     if let Err(err) = std::fs::remove_file(world_folder.join("data").join(format!("{key}.dat"))) {
         if err.kind() != ErrorKind::NotFound {
-            println!("{indent}Error deleting legacy {key}.dat file: {err}");
+            error!("Error deleting legacy {key}.dat file: {err}");
         }
     }
 }
 
-pub fn delete_legacy_dat_files(indent: Indent, world_folder: &Path) {
+pub fn delete_legacy_dat_files(world_folder: &Path) {
     for key in OVERWORLD_LEGACY_KEYS {
-        delete_legacy_dat_file(indent, world_folder, key);
+        delete_legacy_dat_file(world_folder, key);
     }
     for key in NETHER_KEYS {
-        delete_legacy_dat_file(indent, world_folder, key);
+        delete_legacy_dat_file(world_folder, key);
     }
     for key in END_KEYS {
-        delete_legacy_dat_file(indent, world_folder, key);
+        delete_legacy_dat_file(world_folder, key);
     }
 }

@@ -1,8 +1,8 @@
 use crate::data::upgrade_data;
-use crate::indent::Indent;
 use crate::region::{delete_legacy_dat_files, upgrade_chunks, upgrade_entities, upgrade_poi};
 use java_string::JavaStr;
 use std::path::Path;
+use tracing::{error, info_span};
 use world_transmuter::types;
 use world_transmuter_engine::{JCompound, JValue};
 
@@ -58,19 +58,11 @@ fn get_generator<'a>(
     &gen_type[..]
 }
 
-pub fn upgrade_dimensions(
-    mut indent: Indent,
-    world: &Path,
-    to_version: u32,
-    dry_run: bool,
-    level_dat: &JCompound,
-) {
-    println!("{indent}Upgrading dimensions");
-    indent.indent();
+pub fn upgrade_dimensions(world: &Path, to_version: u32, dry_run: bool, level_dat: &JCompound) {
+    let _span = info_span!("Upgrading dimensions").entered();
 
-    println!("{indent}Upgrading the overworld");
+    let span = info_span!("Upgrading dimension", message = "the overworld").entered();
     upgrade_dimension(
-        indent,
         JavaStr::from_str("minecraft:overworld"),
         get_generator(level_dat, "minecraft:overworld"),
         world,
@@ -78,10 +70,10 @@ pub fn upgrade_dimensions(
         to_version,
         dry_run,
     );
+    span.exit();
 
-    println!("{indent}Upgrading the nether");
+    let span = info_span!("Upgrading dimension", message = "the nether").entered();
     upgrade_dimension(
-        indent,
         JavaStr::from_str("minecraft:the_nether"),
         get_generator(level_dat, "minecraft:the_nether"),
         world,
@@ -89,10 +81,10 @@ pub fn upgrade_dimensions(
         to_version,
         dry_run,
     );
+    span.exit();
 
-    println!("{indent}Upgrading the end");
+    let span = info_span!("Upgrading dimension", message = "the end").entered();
     upgrade_dimension(
-        indent,
         JavaStr::from_str("minecraft:the_end"),
         get_generator(level_dat, "minecraft:the_end"),
         world,
@@ -100,15 +92,19 @@ pub fn upgrade_dimensions(
         to_version,
         dry_run,
     );
+    span.exit();
 
     for (dim_id, dim_namespace, dim_path) in get_custom_dimensions(level_dat) {
-        println!("{indent}Upgrading {dim_id}");
+        let _span = info_span!(
+            "Upgrading dimension",
+            message = dim_id.as_str_lossy().as_ref()
+        )
+        .entered();
         let mut dimension_dir = world.join(dim_namespace.as_str_lossy().as_ref());
         for part in dim_path.split('/') {
             dimension_dir.push(part.as_str_lossy().as_ref());
         }
         upgrade_dimension(
-            indent,
             dim_id,
             get_generator(level_dat, dim_id),
             world,
@@ -119,17 +115,11 @@ pub fn upgrade_dimensions(
     }
 
     if !dry_run {
-        delete_legacy_dat_files(indent, world);
+        delete_legacy_dat_files(world);
     }
 }
 
-fn upgrade_raids(
-    indent: Indent,
-    dim_id: &JavaStr,
-    dim_folder: &Path,
-    to_version: u32,
-    dry_run: bool,
-) {
+fn upgrade_raids(dim_id: &JavaStr, dim_folder: &Path, to_version: u32, dry_run: bool) {
     if to_version >= NETHER_RAIDS_RENAME && dim_id == "minecraft:the_nether" {
         // move raids_nether.dat to raids.dat
         // note that vanilla doesn't do this and the old raids get lost
@@ -138,7 +128,6 @@ fn upgrade_raids(
             let raids_nether_file = dim_folder.join("data").join("raids_nether.dat");
             if dry_run {
                 upgrade_data(
-                    indent,
                     dim_folder,
                     "raids_nether",
                     types::saved_data_raids,
@@ -146,7 +135,7 @@ fn upgrade_raids(
                     dry_run,
                 );
             } else if let Err(err) = std::fs::rename(raids_nether_file, raids_file) {
-                println!("{indent}Error renaming raids_nether.dat to raids.dat: {err}");
+                error!("Error renaming raids_nether.dat to raids.dat: {err}");
                 return;
             }
         }
@@ -160,7 +149,6 @@ fn upgrade_raids(
         "raids"
     };
     upgrade_data(
-        indent,
         dim_folder,
         raids_file,
         types::saved_data_raids,
@@ -170,7 +158,6 @@ fn upgrade_raids(
 }
 
 fn upgrade_dimension(
-    mut indent: Indent,
     dim_id: &JavaStr,
     generator_type: &JavaStr,
     world_folder: &Path,
@@ -178,13 +165,10 @@ fn upgrade_dimension(
     to_version: u32,
     dry_run: bool,
 ) {
-    indent.indent();
-
     // Upgrade entity chunks before regions, as regions may write to entities
-    upgrade_entities(indent, dimension, to_version, dry_run);
+    upgrade_entities(dimension, to_version, dry_run);
 
     upgrade_chunks(
-        indent,
         dim_id,
         generator_type,
         world_folder,
@@ -193,7 +177,7 @@ fn upgrade_dimension(
         dry_run,
     );
 
-    upgrade_poi(indent, dimension, to_version, dry_run);
+    upgrade_poi(dimension, to_version, dry_run);
 
-    upgrade_raids(indent, dim_id, dimension, to_version, dry_run);
+    upgrade_raids(dim_id, dimension, to_version, dry_run);
 }

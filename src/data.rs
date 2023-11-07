@@ -1,4 +1,3 @@
-use crate::indent::Indent;
 use crate::upgrade;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -8,6 +7,7 @@ use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::RwLockReadGuard;
+use tracing::{error, info_span};
 use valence_nbt::{from_binary, to_binary};
 use world_transmuter::types;
 use world_transmuter_engine::{JCompound, MapDataType};
@@ -40,7 +40,6 @@ pub fn read_data(dim_folder: &Path, name: impl Into<String>) -> io::Result<Optio
 }
 
 pub fn upgrade_data(
-    mut indent: Indent,
     dim_folder: &Path,
     name: impl Into<String>,
     typ: impl FnOnce() -> RwLockReadGuard<'static, MapDataType<'static>>,
@@ -49,22 +48,21 @@ pub fn upgrade_data(
 ) {
     let name = name.into();
 
-    println!("{indent}Upgrading {name}");
-    indent.indent();
+    let _span = info_span!("Upgrading data", message = name).entered();
 
     let mut data = match read_data(dim_folder, name.clone()) {
         Ok(Some(data)) => data,
         Ok(None) => {
-            println!("{indent}Error reading {name}.dat");
+            error!("Error reading {name}.dat");
             return;
         }
         Err(err) if err.kind() == ErrorKind::NotFound => return,
         Err(err) => {
-            println!("{indent}Error reading {name}.dat: {err}");
+            error!("Error reading {name}.dat: {err}");
             return;
         }
     };
-    if !upgrade(indent, typ, &mut data, || name.clone(), to_version, 99) {
+    if !upgrade(typ, &mut data, || name.clone(), to_version, 99) {
         return;
     }
 
@@ -72,29 +70,28 @@ pub fn upgrade_data(
         let file = match File::create(dim_folder.join("data").join(format!("{name}.dat"))) {
             Ok(file) => file,
             Err(err) => {
-                println!("{indent}Error opening {name}.dat for write: {err}");
+                error!("Error opening {name}.dat for write: {err}");
                 return;
             }
         };
         if let Err(err) = to_binary(&data, GzEncoder::new(file, Compression::default()), "") {
-            println!("{indent}Error writing to {name}.dat: {err}");
+            error!("Error writing to {name}.dat: {err}");
         }
     }
 }
 
-pub fn upgrade_map_data(mut indent: Indent, world_folder: &Path, to_version: u32, dry_run: bool) {
-    println!("{indent}Upgrading map data");
-    indent.indent();
+pub fn upgrade_map_data(world_folder: &Path, to_version: u32, dry_run: bool) {
+    let _span = info_span!("Upgrading map data").entered();
 
     let idcounts = match read_data(world_folder, "idcounts") {
         Ok(Some(data)) => data,
         Ok(None) => {
-            println!("{indent}Error reading idcounts.dat");
+            error!("Error reading idcounts.dat");
             return;
         }
         Err(err) if err.kind() == ErrorKind::NotFound => return,
         Err(err) => {
-            println!("{indent}Error reading idcounts.dat: {err}");
+            error!("Error reading idcounts.dat: {err}");
             return;
         }
     };
@@ -104,7 +101,6 @@ pub fn upgrade_map_data(mut indent: Indent, world_folder: &Path, to_version: u32
     };
     for map_id in 0..=map_count {
         upgrade_data(
-            indent,
             world_folder,
             format!("map_{map_id}"),
             types::saved_data_map_data,
