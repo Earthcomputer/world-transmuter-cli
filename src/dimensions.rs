@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use crate::data::upgrade_data;
 use crate::region::{delete_legacy_dat_files, upgrade_chunks, upgrade_entities, upgrade_poi};
 use java_string::JavaStr;
@@ -6,6 +7,7 @@ use tracing::{error, info_span};
 use world_transmuter::types;
 use world_transmuter_engine::{JCompound, JValue};
 
+const FIRST_RAIDS_VERSION: u32 = 1912; // 18w47a
 const NETHER_RAIDS_RENAME: u32 = 2972; // 1.18.2-pre2
 
 fn get_custom_dimensions(level_dat: &JCompound) -> Vec<(&JavaStr, &JavaStr, &JavaStr)> {
@@ -120,6 +122,10 @@ pub fn upgrade_dimensions(world: &Path, to_version: u32, dry_run: bool, level_da
 }
 
 fn upgrade_raids(dim_id: &JavaStr, dim_folder: &Path, to_version: u32, dry_run: bool) {
+    if to_version < FIRST_RAIDS_VERSION {
+        return;
+    }
+
     if to_version >= NETHER_RAIDS_RENAME && dim_id == "minecraft:the_nether" {
         // move raids_nether.dat to raids.dat
         // note that vanilla doesn't do this and the old raids get lost
@@ -135,7 +141,9 @@ fn upgrade_raids(dim_id: &JavaStr, dim_folder: &Path, to_version: u32, dry_run: 
                     dry_run,
                 );
             } else if let Err(err) = std::fs::rename(raids_nether_file, raids_file) {
-                error!("Error renaming raids_nether.dat to raids.dat: {err}");
+                if err.kind() != ErrorKind::NotFound {
+                    error!("Error renaming raids_nether.dat to raids.dat: {err}");
+                }
                 return;
             }
         }

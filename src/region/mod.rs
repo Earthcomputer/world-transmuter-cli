@@ -15,6 +15,7 @@ use world_transmuter_engine::JCompound;
 pub use chunk::{delete_legacy_dat_files, upgrade_chunks};
 
 const SEPARATE_ENTITIES_VERSION: u32 = 2681; // 20w45a
+const FIRST_POI_VERSION: u32 = 1937; // 19w11a
 
 pub fn upgrade_entities(dimension: &Path, to_version: u32, dry_run: bool) {
     if to_version < SEPARATE_ENTITIES_VERSION {
@@ -39,10 +40,15 @@ pub fn upgrade_entities(dimension: &Path, to_version: u32, dry_run: bool) {
 }
 
 pub fn upgrade_poi(dimension: &Path, to_version: u32, dry_run: bool) {
+    if to_version < FIRST_POI_VERSION {
+        return;
+    }
+
+    let _span = info_span!("Upgrading poi").entered();
+
     let poi_path = dimension.join("poi");
     match poi_path.try_exists() {
         Ok(true) => {
-            let _span = info_span!("Upgrading poi").entered();
             upgrade_regions(
                 &poi_path,
                 dry_run,
@@ -52,7 +58,7 @@ pub fn upgrade_poi(dimension: &Path, to_version: u32, dry_run: bool) {
                         chunk,
                         || format!("chunk at {chunk_x}, {chunk_z}"),
                         to_version,
-                        99,
+                        FIRST_POI_VERSION,
                     )
                 },
                 || (),
